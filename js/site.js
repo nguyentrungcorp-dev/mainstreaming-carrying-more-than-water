@@ -11,6 +11,7 @@
   var HEADER = 56;
   var reduceMotion = !!(win.matchMedia && win.matchMedia('(prefers-reduced-motion: reduce)').matches);
   var raf = win.requestAnimationFrame || function (fn) { return win.setTimeout(function () { fn(Date.now()); }, 16); };
+  var caf = win.cancelAnimationFrame || win.clearTimeout;
   var now = function () { return (win.performance && performance.now) ? performance.now() : Date.now(); };
 
   function all(sel, ctx) { return Array.prototype.slice.call((ctx || doc).querySelectorAll(sel)); }
@@ -136,6 +137,21 @@
     return { box: box, fig: one('.scrolly-figure', box), steps: all('.scrolly-step', box), current: -1, type: box.getAttribute('data-scrolly') };
   });
   var mapCtl = setupMap(one('.map-svg'));
+  // Karst scene on narrow screens: zoom into the part each step talks about, so the tags stay readable.
+  var karstSvg = one('.karst-svg'), karstBox = [0, 0, 900, 560], karstAnim = null;
+  var KARST_ZOOM = [[0, 90, 450, 280], [30, 180, 600, 373], [200, 174, 620, 386], [400, 130, 500, 311], [250, 150, 400, 249]];
+  function karstZoom(i) {
+    if (!karstSvg) return;
+    var target = karstSvg.getBoundingClientRect().width < 600 ? KARST_ZOOM[i] || [0, 0, 900, 560] : [0, 0, 900, 560];
+    var from = karstBox.slice(), t0 = now(), dur = reduceMotion ? 1 : 700;
+    if (karstAnim) caf.call(win, karstAnim);
+    (function tick() {
+      var p = Math.min(1, (now() - t0) / dur), e = p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+      for (var k = 0; k < 4; k++) karstBox[k] = from[k] + (target[k] - from[k]) * e;
+      karstSvg.setAttribute('viewBox', karstBox.map(function (v) { return v.toFixed(1); }).join(' '));
+      if (p < 1) karstAnim = raf(tick);
+    })();
+  }
   function updateScrollies() {
     for (var i = 0; i < scrollies.length; i++) {
       var s = scrollies[i], active = 0;
@@ -151,10 +167,22 @@
         s.current = active;
         s.fig.setAttribute('data-step', String(active));
         if (s.type === 'map' && mapCtl) { mapCtl.go(active); mapUI.step(active); }
+        if (s.type === 'karst') karstZoom(active);
       }
     }
   }
   scrollHandlers.push(updateScrollies);
+  // Season switch on the karst scene: jump to the first wet or dry step.
+  all('[data-season-go]').forEach(function (b) {
+    on(b, 'click', function () {
+      var step = doc.getElementById('karst-step-' + b.getAttribute('data-season-go'));
+      if (!step) return;
+      var card = one('.step-card', step) || step;
+      var y = card.getBoundingClientRect().top + (win.pageYOffset || doc.documentElement.scrollTop) - viewH() * 0.45;
+      win.scrollTo(0, Math.max(0, Math.round(y)));
+    });
+  });
+
   var mapUI = setupMapUI(one('.map-card'));
 
   /* ---------- Map: chips, place cards, province names ---------- */
@@ -323,6 +351,8 @@
       for (var k = 0; k < voiceCards.length; k++) voiceCards[k].setAttribute('aria-pressed', k === i ? 'true' : 'false');
       for (var j = 0; j < voiceTexts.length; j++) voiceTexts[j].hidden = j !== i;
       if (voiceEmpty) voiceEmpty.hidden = i >= 0;
+      var bub = one('.voice-bubble');
+      if (bub) { if (i >= 0 && voiceCards[i].getAttribute('data-gender') === 'm') addClass(bub, 'is-m'); else removeClass(bub, 'is-m'); }
     }
     voiceCards.forEach(function (c, i) { on(c, 'click', function () { if (!c.disabled) showVoice(i); }); });
     var FULL_MS = 7000;
@@ -385,6 +415,124 @@
     render();
   })();
 
+
+
+  /* ---------- How high is it? A figure walks the cross-section as you scroll ---------- */
+  all('[data-alt]').forEach(function (sec) {
+    var path = one('#alt-path', sec), walker = one('#alt-walker', sec), rect = one('#alt-done-rect', sec);
+    var svg = one('.alt-svg', sec);
+    var pts = all('[data-alt-pt]', sec), cards = all('[data-alt-card]', sec);
+    if (!path || !path.getTotalLength) return;
+    var L = path.getTotalLength();
+    function lenAtX(x) {
+      var lo = 0, hi = L;
+      for (var k = 0; k < 30; k++) { var mid = (lo + hi) / 2; if (path.getPointAtLength(mid).x < x) lo = mid; else hi = mid; }
+      return lo;
+    }
+    var X0 = 30, X1 = 1165, cur = -2, lastX = null, timer = null;
+    var ptX = pts.map(function (g) { return parseFloat(g.getAttribute('data-x')); });
+    function place() {
+      var small = svg.getBoundingClientRect().width < 700;
+      pts.forEach(function (g, i) {
+        var p = path.getPointAtLength(lenAtX(ptX[i]));
+        var r = small ? 24 : 13;
+        one('.alt-dot', g).setAttribute('cy', p.y.toFixed(1));
+        one('.alt-dot', g).setAttribute('r', String(r));
+        one('.alt-n', g).setAttribute('y', (p.y + (small ? 9 : 5)).toFixed(1));
+        var pin = one('.alt-pin', g); pin.setAttribute('y1', (p.y - r).toFixed(1)); pin.setAttribute('y2', (p.y - r - 18).toFixed(1));
+        var texts = g.querySelectorAll('.alt-lab text');
+        texts[0].setAttribute('y', (p.y - r - 44).toFixed(1));
+        texts[1].setAttribute('y', (p.y - r - 24).toFixed(1));
+      });
+    }
+    function headerH() { var h = doc.querySelector('.site-header'); return h ? h.offsetHeight : 56; }
+    function progress() {
+      var r = sec.getBoundingClientRect(), run = sec.offsetHeight - (win.innerHeight - headerH());
+      if (run <= 0) return 1;
+      return Math.max(0, Math.min(1, (headerH() - r.top) / run));
+    }
+    function setActive(i) {
+      if (i === cur) return;
+      cur = i;
+      for (var k = 0; k < pts.length; k++) { if (k <= i) addClass(pts[k], 'reached'); else removeClass(pts[k], 'reached'); }
+      for (var j = 0; j < cards.length; j++) cards[j].hidden = j !== i;
+    }
+    function update() {
+      var x = X0 + (X1 - X0) * Math.min(1, progress() * 1.06);
+      var len = lenAtX(x), p = path.getPointAtLength(len), q = path.getPointAtLength(Math.min(L, len + 6));
+      var ang = Math.atan2(q.y - p.y, q.x - p.x) * 180 / Math.PI;
+      walker.setAttribute('transform', 'translate(' + p.x.toFixed(1) + ' ' + p.y.toFixed(1) + ') rotate(' + (ang * 0.3).toFixed(1) + ')');
+      rect.setAttribute('width', String(Math.max(0, x + 20)));
+      if (lastX !== null && Math.abs(lastX - x) > 0.3) { addClass(walker, 'walking'); clearTimeout(timer); timer = setTimeout(function () { removeClass(walker, 'walking'); }, 220); }
+      lastX = x;
+      var i = -1; for (var k = 0; k < ptX.length; k++) if (x >= ptX[k] - 6) i = k;
+      setActive(i);
+    }
+    function goTo(i) {
+      var run = sec.offsetHeight - (win.innerHeight - headerH());
+      var pr = ((ptX[i] - X0) / (X1 - X0)) / 1.06 + 0.003;
+      var top = sec.getBoundingClientRect().top + (win.pageYOffset || doc.documentElement.scrollTop) - headerH();
+      win.scrollTo(0, Math.round(top + pr * run));
+    }
+    pts.forEach(function (g, i) {
+      on(g, 'click', function () { goTo(i); });
+      on(g, 'keydown', function (e) { if (e.keyCode === 13 || e.keyCode === 32) { e.preventDefault(); goTo(i); } });
+    });
+    addClass(sec, 'is-pinned');
+    place();
+    scrollHandlers.push(update);
+    resizeHandlers.push(function () { place(); cur = -2; update(); });
+    update();
+  });
+
+
+  /* ---------- Chapter 5: two stories on one scale ---------- */
+  all('[data-scale]').forEach(function (box) {
+    var facts = all('.fact', box), beam = one('#scale-beam', box), panL = one('#pan-l', box), panR = one('#pan-r', box);
+    var stackL = one('#stack-l', box), stackR = one('#stack-r', box), reset = one('#scale-reset', box);
+    var NS = stackL.namespaceURI;   // the SVG namespace, taken from the element itself
+    function setT(el, v) { el.style.transform = el.style.webkitTransform = v; }
+    function block(stack, i, cx, color) {
+      var r = doc.createElementNS(NS, 'rect');
+      r.setAttribute('x', String(cx - 36)); r.setAttribute('y', String(150 - i * 13)); r.setAttribute('width', '72'); r.setAttribute('height', '11');
+      r.setAttribute('rx', '3'); r.setAttribute('fill', color); r.setAttribute('class', 'pan-block');
+      stack.appendChild(r);
+    }
+    function render() {
+      var l = 0, r = 0;
+      while (stackL.firstChild) stackL.removeChild(stackL.firstChild);
+      while (stackR.firstChild) stackR.removeChild(stackR.firstChild);
+      facts.forEach(function (f) {
+        if (f.getAttribute('aria-pressed') !== 'true') return;
+        if (f.getAttribute('data-side') === 'l') block(stackL, l++, 100, '#50575c'); else block(stackR, r++, 500, '#0f4f86');
+      });
+      var a = Math.max(-14, Math.min(14, (r - l) * 5));
+      setT(beam, 'rotate(' + a + 'deg)'); setT(panL, 'rotate(' + (-a) + 'deg)'); setT(panR, 'rotate(' + (-a) + 'deg)');
+      if (l > 0 && l === r) addClass(box, 'is-level'); else removeClass(box, 'is-level');
+      reset.hidden = l + r === 0;
+    }
+    facts.forEach(function (f) { on(f, 'click', function () { f.setAttribute('aria-pressed', f.getAttribute('aria-pressed') === 'true' ? 'false' : 'true'); render(); }); });
+    on(reset, 'click', function () { facts.forEach(function (f) { f.setAttribute('aria-pressed', 'false'); }); render(); });
+    render();
+  });
+
+  /* ---------- Chapter 5: the four steps ---------- */
+  all('[data-stairs]').forEach(function (box) {
+    var steps = all('.stair', box), walker = one('#stair-walker', box);
+    function go(i) {
+      steps.forEach(function (s, k) {
+        s.setAttribute('aria-pressed', k === i ? 'true' : 'false');
+        if (k < i) addClass(s, 'is-done'); else removeClass(s, 'is-done');
+      });
+      var s = steps[i], bx = box.getBoundingClientRect(), sb = s.getBoundingClientRect();
+      var x = sb.left - bx.left + sb.width / 2 - 23, y = -(sb.height);
+      walker.style.transform = walker.style.webkitTransform = 'translate(' + x.toFixed(0) + 'px,' + y.toFixed(0) + 'px)';
+    }
+    var cur = 0;
+    steps.forEach(function (s, i) { on(s, 'click', function () { cur = i; go(i); }); });
+    resizeHandlers.push(function () { go(cur); });
+    go(0);
+  });
 
   /* ---------- Chapter 4: the road to the reservoir ----------
      Desktop: the section is pinned and scrolling walks the figure along the road from stop to stop.
