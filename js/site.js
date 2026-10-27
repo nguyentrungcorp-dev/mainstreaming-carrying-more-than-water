@@ -476,17 +476,19 @@
     }
     function update() { if (wide) updateWide(); else updateNarrow(); }
     // Clicking a card on desktop scrolls to the point where the walker reaches it.
+    function goTo(i) {
+      if (!wide) { setActive(i); return; }
+      var run = sec.offsetHeight - (win.innerHeight - headerH());
+      var p = ((stopLen[i] - startLen) / (endLen - startLen)) / 1.08 + 0.004;
+      var top = sec.getBoundingClientRect().top + (win.pageYOffset || doc.documentElement.scrollTop) - headerH();
+      win.scrollTo(0, Math.round(top + p * run));
+    }
     cards.forEach(function (c, i) {
       var b = one('button.polaroid', c);
-      if (!b) return;
-      on(b, 'click', function () {
-        if (!wide) { setActive(i); return; }
-        var run = sec.offsetHeight - (win.innerHeight - headerH());
-        var p = ((stopLen[i] - startLen) / (endLen - startLen)) / 1.08 + 0.004;
-        var top = sec.getBoundingClientRect().top + (win.pageYOffset || doc.documentElement.scrollTop) - headerH();
-        win.scrollTo(0, Math.round(top + p * run));
-      });
+      if (b) on(b, 'click', function () { goTo(i); });
     });
+    // The numbered stops on the road work the same way as the cards.
+    stops.forEach(function (st, i) { on(st, 'click', function () { goTo(i); }); });
     scrollHandlers.push(update);
     resizeHandlers.push(layout);
     layout();
@@ -593,9 +595,9 @@
     var words = all('.iq', box);
     var L = trail.getTotalLength();
     done.style.strokeDasharray = L + ' ' + L;
-    var DUR = reduceMotion ? 1200 : 6500;           // ms of holding to walk the whole trail
+    var DUR = reduceMotion ? 1000 : 3200;           // ms of holding to walk the whole trail
     var p = 0, v = 0, holding = false, last = 0, running = false, arrived = false, closed = false, facing = 1;
-    var pushUntil = 0, PUSH = 650;   // each press keeps her walking a little longer, so tapping works as well as holding
+    var pushUntil = 0, PUSH = 800;   // each press keeps her walking a little longer, so tapping works as well as holding
 
     // Keep the important part of the scene (summit spring to house) in view at any screen shape.
     function fit() {
@@ -631,7 +633,7 @@
     function frame() {
       var t = now(), dt = Math.min(50, t - last); last = t;
       var target = (holding || t < pushUntil) && !arrived ? 1 : 0;
-      v += (target - v) * Math.min(1, dt / (reduceMotion ? 60 : 260));   // ease in and out
+      v += (target - v) * Math.min(1, dt / (reduceMotion ? 60 : 170));   // ease in and out
       p = Math.min(1, p + v * dt / DUR);
       place();
       if (v > 0.15 && !arrived) addClass(walker, 'walking'); else removeClass(walker, 'walking');
