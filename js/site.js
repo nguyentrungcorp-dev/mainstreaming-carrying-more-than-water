@@ -314,7 +314,17 @@
     var bar = doc.getElementById('carry-progress');
     var water = doc.getElementById('can-water');
     var end = doc.getElementById('carry-end');
-    var marks = all('.milestone');
+    var voiceCards = all('[data-voice]');
+    var voiceTexts = all('[data-voice-text]');
+    var voiceEmpty = doc.getElementById('vb-empty');
+    var shown = -1, unlocked = -1;
+    function showVoice(i) {
+      shown = i;
+      for (var k = 0; k < voiceCards.length; k++) voiceCards[k].setAttribute('aria-pressed', k === i ? 'true' : 'false');
+      for (var j = 0; j < voiceTexts.length; j++) voiceTexts[j].hidden = j !== i;
+      if (voiceEmpty) voiceEmpty.hidden = i >= 0;
+    }
+    voiceCards.forEach(function (c, i) { on(c, 'click', function () { if (!c.disabled) showVoice(i); }); });
     var FULL_MS = 7000;
     var progress = 0, holding = false, last = 0;
 
@@ -322,9 +332,13 @@
       fillBar.style.width = (progress * 100).toFixed(1) + '%';
       bar.setAttribute('aria-valuenow', String(Math.round(progress * 100)));
       water.setAttribute('y', String(160 - 132 * progress));
-      for (var i = 0; i < marks.length; i++) {
-        if (progress >= parseFloat(marks[i].getAttribute('data-at'))) addClass(marks[i], 'reached'); else removeClass(marks[i], 'reached');
+      var reach = -1;
+      for (var i = 0; i < voiceCards.length; i++) {
+        var ok = progress >= parseFloat(voiceCards[i].getAttribute('data-at'));
+        voiceCards[i].disabled = !ok;
+        if (ok) reach = i;
       }
+      if (reach !== unlocked) { unlocked = reach; showVoice(reach); }
       if (progress >= 1) {
         btn.textContent = btn.getAttribute('data-done');
         addClass(btn, 'done'); removeClass(btn, 'active');
@@ -365,11 +379,118 @@
     on(btn, 'keyup', function (e) { if (e.keyCode === 32 || e.keyCode === 13) stop(); });
     on(btn, 'blur', stop);
     on(reset, 'click', function () {
-      progress = 0; removeClass(btn, 'done'); removeClass(end, 'show');
+      progress = 0; unlocked = -1; removeClass(btn, 'done'); removeClass(end, 'show');
       btn.textContent = btn.getAttribute('data-hold'); reset.hidden = true; render(); btn.focus();
     });
     render();
   })();
+
+
+  /* ---------- Chapter 4: the road to the reservoir ----------
+     Desktop: the section is pinned and scrolling walks the figure along the road from stop to stop.
+     Narrow screens: the road runs down the page beside the cards and the figure follows the reading position. */
+  all('[data-road]').forEach(function (sec) {
+    var road = one('.road', sec), band = one('.road-band', sec), fit = one('.road-fit', sec);
+    var path = one('#road-path', sec), done = one('#road-done', sec), walker = one('#road-walker', sec);
+    var fill = one('#road-fill', sec), detail = one('#road-detail', sec);
+    var stops = all('[data-stop]', sec), cards = all('[data-card]', sec);
+    if (!path || !path.getTotalLength) return;
+    var L = path.getTotalLength(), VBW = 1600, VBH = 220;
+    // Length along the path at each stop (the path runs left to right, so search on x).
+    function lenAtX(x) {
+      var lo = 0, hi = L;
+      for (var k = 0; k < 30; k++) { var mid = (lo + hi) / 2; if (path.getPointAtLength(mid).x < x) lo = mid; else hi = mid; }
+      return lo;
+    }
+    var stopX = stops.map(function (s) { return parseFloat(s.style.left) * 16; });
+    var stopLen = stopX.map(lenAtX);
+    var startLen = Math.max(0, stopLen[0] - 160), endLen = stopLen[stopLen.length - 1];
+    done.style.strokeDasharray = L + ' ' + L;
+    var cur = -1, wide = false, walkTimer = null, lastPos = null;
+    function isWide() { return win.innerWidth > 900; }
+    function walking() {
+      addClass(walker, 'walking');
+      clearTimeout(walkTimer);
+      walkTimer = setTimeout(function () { removeClass(walker, 'walking'); }, 220);
+    }
+    function setActive(i) {
+      if (i === cur) return;
+      cur = i;
+      for (var k = 0; k < cards.length; k++) {
+        if (k <= i) addClass(cards[k], 'reached'); else removeClass(cards[k], 'reached');
+        if (k === i) addClass(cards[k], 'is-active'); else removeClass(cards[k], 'is-active');
+        var b = one('.polaroid', cards[k]); if (b && b.tagName === 'BUTTON') b.setAttribute('aria-expanded', k === i ? 'true' : 'false');
+      }
+      for (var j = 0; j < stops.length; j++) { if (j <= i) addClass(stops[j], 'reached'); else removeClass(stops[j], 'reached'); }
+      if (detail && wide) {
+        var src = i >= 0 ? one('.pol-text', cards[i]) : null;
+        detail.innerHTML = src ? '<div class="pol-text">' + src.innerHTML + '</div>' : '';
+      }
+    }
+    function fitStage() {
+      if (!fit) return;
+      fit.style.transform = fit.style.webkitTransform = '';
+      if (!wide) return;
+      var avail = win.innerHeight - headerH(), need = fit.offsetHeight;
+      var k = need > avail ? Math.max(0.6, avail / need) : 1;
+      if (k < 1) fit.style.transform = fit.style.webkitTransform = 'scale(' + k.toFixed(3) + ')';
+    }
+    function headerH() { var h = doc.querySelector('.site-header'); return h ? h.offsetHeight : 56; }
+    function progressWide() {
+      var r = sec.getBoundingClientRect(), run = sec.offsetHeight - (win.innerHeight - headerH());
+      if (run <= 0) return 0;
+      return Math.max(0, Math.min(1, (headerH() - r.top) / run));
+    }
+    function updateWide() {
+      var p = progressWide();
+      var len = startLen + (endLen - startLen) * Math.min(1, p * 1.08);
+      var pt = path.getPointAtLength(len);
+      var w = band.offsetWidth, h = band.offsetHeight;
+      var x = pt.x / VBW * w, y = band.offsetTop - h / 2 + pt.y / VBH * h;
+      var ahead = path.getPointAtLength(Math.min(L, len + 8));
+      var ang = Math.atan2(ahead.y - pt.y, ahead.x - pt.x) * 180 / Math.PI;
+      walker.style.transform = walker.style.webkitTransform = 'translate(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px) rotate(' + (ang * 0.35).toFixed(1) + 'deg)';
+      done.style.strokeDashoffset = String(L - len);
+      var i = -1; for (var k = 0; k < stopLen.length; k++) if (len >= stopLen[k] - 4) i = k;
+      if (lastPos !== null && Math.abs(lastPos - len) > 0.5) walking();
+      lastPos = len;
+      setActive(i);
+    }
+    function updateNarrow() {
+      var r = road.getBoundingClientRect(), H = road.offsetHeight;
+      var y = Math.max(0, Math.min(H - 20, win.innerHeight * 0.55 - r.top));
+      walker.style.transform = walker.style.webkitTransform = 'translate(40px,' + y.toFixed(1) + 'px)';
+      if (fill) fill.style.height = y.toFixed(1) + 'px';
+      var i = -1;
+      for (var k = 0; k < cards.length; k++) if (cards[k].offsetTop + 20 <= y + 18) i = k;
+      if (lastPos !== null && Math.abs(lastPos - y) > 0.5) walking();
+      lastPos = y;
+      setActive(i);
+    }
+    function layout() {
+      wide = isWide();
+      if (wide) addClass(sec, 'is-pinned'); else removeClass(sec, 'is-pinned');
+      fitStage();
+      cur = -2; lastPos = null;
+      update();
+    }
+    function update() { if (wide) updateWide(); else updateNarrow(); }
+    // Clicking a card on desktop scrolls to the point where the walker reaches it.
+    cards.forEach(function (c, i) {
+      var b = one('button.polaroid', c);
+      if (!b) return;
+      on(b, 'click', function () {
+        if (!wide) { setActive(i); return; }
+        var run = sec.offsetHeight - (win.innerHeight - headerH());
+        var p = ((stopLen[i] - startLen) / (endLen - startLen)) / 1.08 + 0.004;
+        var top = sec.getBoundingClientRect().top + (win.pageYOffset || doc.documentElement.scrollTop) - headerH();
+        win.scrollTo(0, Math.round(top + p * run));
+      });
+    });
+    scrollHandlers.push(update);
+    resizeHandlers.push(layout);
+    layout();
+  });
 
   /* ---------- Before / after slider ---------- */
   all('[data-ba]').forEach(function (box) {
