@@ -137,6 +137,16 @@
     return { box: box, fig: one('.scrolly-figure', box), steps: all('.scrolly-step', box), current: -1, type: box.getAttribute('data-scrolly') };
   });
   var mapCtl = setupMap(one('.map-svg'));
+  var altCtl = setupAlt(one('.alt-fig'));
+  // Map / height switch: jump to the first map step or the first height step.
+  all('[data-place-go]').forEach(function (b) {
+    on(b, 'click', function () {
+      var i = b.getAttribute('data-place-go'), el = doc.getElementById('map-step-' + i) || doc.getElementById('plateau-altitude');
+      if (i !== '0') el = doc.getElementById('plateau-altitude');
+      var card = one('.step-card', el) || el;
+      win.scrollTo(0, Math.max(0, Math.round(card.getBoundingClientRect().top + (win.pageYOffset || doc.documentElement.scrollTop) - viewH() * 0.45)));
+    });
+  });
   // Karst scene on narrow screens: zoom into the part each step talks about, so the tags stay readable.
   var karstSvg = one('.karst-svg'), karstBox = [0, 0, 900, 560], karstAnim = null;
   var KARST_ZOOM = [[0, 90, 450, 280], [30, 180, 600, 373], [200, 174, 620, 386], [400, 130, 500, 311], [250, 150, 400, 249]];
@@ -166,7 +176,12 @@
       if (active !== s.current) {
         s.current = active;
         s.fig.setAttribute('data-step', String(active));
-        if (s.type === 'map' && mapCtl) { mapCtl.go(active); mapUI.step(active); }
+        if (s.type === 'map') {
+          var nMap = parseInt(s.box.getAttribute('data-map-steps'), 10) || s.steps.length, isAlt = active >= nMap;
+          if (mapCtl) { mapCtl.go(Math.min(active, nMap - 1)); mapUI.step(Math.min(active, nMap - 1)); }
+          if (isAlt) addClass(s.fig, 'is-alt'); else removeClass(s.fig, 'is-alt');
+          if (altCtl) altCtl.go(isAlt ? active - nMap : -1);
+        }
         if (s.type === 'karst') karstZoom(active);
       }
     }
@@ -417,25 +432,25 @@
 
 
 
-  /* ---------- How high is it? A figure walks the cross-section as you scroll ---------- */
-  all('[data-alt]').forEach(function (sec) {
-    var path = one('#alt-path', sec), walker = one('#alt-walker', sec), rect = one('#alt-done-rect', sec);
-    var svg = one('.alt-svg', sec);
-    var pts = all('[data-alt-pt]', sec), cards = all('[data-alt-card]', sec);
-    if (!path || !path.getTotalLength) return;
+  /* ---------- How high is it? (inside the map scrolly) ----------
+     Each altitude step walks the figure along the cross-section to the next point. */
+  function setupAlt(fig) {
+    if (!fig) return null;
+    var path = one('#alt-path', fig), walker = one('#alt-walker', fig), rect = one('#alt-done-rect', fig), svg = one('.alt-svg', fig);
+    var pts = all('[data-alt-pt]', fig);
+    if (!path || !path.getTotalLength) return null;
     var L = path.getTotalLength();
     function lenAtX(x) {
       var lo = 0, hi = L;
       for (var k = 0; k < 30; k++) { var mid = (lo + hi) / 2; if (path.getPointAtLength(mid).x < x) lo = mid; else hi = mid; }
       return lo;
     }
-    var X0 = 30, X1 = 1165, cur = -2, lastX = null, timer = null;
     var ptX = pts.map(function (g) { return parseFloat(g.getAttribute('data-x')); });
+    var curX = 20, anim = null;
     function place() {
       var small = svg.getBoundingClientRect().width < 700;
       pts.forEach(function (g, i) {
-        var p = path.getPointAtLength(lenAtX(ptX[i]));
-        var r = small ? 24 : 13;
+        var p = path.getPointAtLength(lenAtX(ptX[i])), r = small ? 24 : 13;
         one('.alt-dot', g).setAttribute('cy', p.y.toFixed(1));
         one('.alt-dot', g).setAttribute('r', String(r));
         one('.alt-n', g).setAttribute('y', (p.y + (small ? 9 : 5)).toFixed(1));
@@ -445,46 +460,48 @@
         texts[1].setAttribute('y', (p.y - r - 24).toFixed(1));
       });
     }
-    function headerH() { var h = doc.querySelector('.site-header'); return h ? h.offsetHeight : 56; }
-    function progress() {
-      var r = sec.getBoundingClientRect(), run = sec.offsetHeight - (win.innerHeight - headerH());
-      if (run <= 0) return 1;
-      return Math.max(0, Math.min(1, (headerH() - r.top) / run));
-    }
-    function setActive(i) {
-      if (i === cur) return;
-      cur = i;
-      for (var k = 0; k < pts.length; k++) { if (k <= i) addClass(pts[k], 'reached'); else removeClass(pts[k], 'reached'); }
-      for (var j = 0; j < cards.length; j++) cards[j].hidden = j !== i;
-    }
-    function update() {
-      var x = X0 + (X1 - X0) * Math.min(1, progress() * 1.06);
+    function draw(x) {
       var len = lenAtX(x), p = path.getPointAtLength(len), q = path.getPointAtLength(Math.min(L, len + 6));
       var ang = Math.atan2(q.y - p.y, q.x - p.x) * 180 / Math.PI;
       walker.setAttribute('transform', 'translate(' + p.x.toFixed(1) + ' ' + p.y.toFixed(1) + ') rotate(' + (ang * 0.3).toFixed(1) + ')');
       rect.setAttribute('width', String(Math.max(0, x + 20)));
-      if (lastX !== null && Math.abs(lastX - x) > 0.3) { addClass(walker, 'walking'); clearTimeout(timer); timer = setTimeout(function () { removeClass(walker, 'walking'); }, 220); }
-      lastX = x;
-      var i = -1; for (var k = 0; k < ptX.length; k++) if (x >= ptX[k] - 6) i = k;
-      setActive(i);
+      camera(x);
     }
-    function goTo(i) {
-      var run = sec.offsetHeight - (win.innerHeight - headerH());
-      var pr = ((ptX[i] - X0) / (X1 - X0)) / 1.06 + 0.003;
-      var top = sec.getBoundingClientRect().top + (win.pageYOffset || doc.documentElement.scrollTop) - headerH();
-      win.scrollTo(0, Math.round(top + pr * run));
+    // When the card is narrower than the drawing, show the full height and pan sideways with the walker,
+    // so labels stay readable. The altitude scale moves with the view.
+    var scaleG = one('#alt-scale', fig);
+    function camera(x) {
+      var r = fig.getBoundingClientRect(), vw = 1200;
+      if (r.width && r.height) vw = Math.min(1200, 560 * r.width / r.height);
+      var vx = Math.max(0, Math.min(1200 - vw, x - vw * 0.45));
+      svg.setAttribute('viewBox', vx.toFixed(1) + ' 0 ' + vw.toFixed(1) + ' 560');
+      if (scaleG) scaleG.setAttribute('transform', 'translate(' + vx.toFixed(1) + ' 0)');
+    }
+    function go(i) {
+      for (var k = 0; k < pts.length; k++) { if (k <= i) addClass(pts[k], 'reached'); else removeClass(pts[k], 'reached'); }
+      var target = i < 0 ? 20 : ptX[i], from = curX, t0 = now(), dur = reduceMotion ? 1 : Math.min(1800, 400 + Math.abs(target - from) * 3);
+      if (anim) caf.call(win, anim);
+      addClass(walker, 'walking');
+      (function tick() {
+        var p = Math.min(1, (now() - t0) / dur), e = p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+        curX = from + (target - from) * e; draw(curX);
+        if (p < 1) anim = raf(tick); else removeClass(walker, 'walking');
+      })();
     }
     pts.forEach(function (g, i) {
-      on(g, 'click', function () { goTo(i); });
-      on(g, 'keydown', function (e) { if (e.keyCode === 13 || e.keyCode === 32) { e.preventDefault(); goTo(i); } });
+      function jump() {
+        var el = doc.getElementById(i === 0 ? 'plateau-altitude' : 'alt-step-' + i);
+        if (!el) return;
+        var card = one('.step-card', el) || el;
+        win.scrollTo(0, Math.max(0, Math.round(card.getBoundingClientRect().top + (win.pageYOffset || doc.documentElement.scrollTop) - viewH() * 0.45)));
+      }
+      on(g, 'click', jump);
+      on(g, 'keydown', function (e) { if (e.keyCode === 13 || e.keyCode === 32) { e.preventDefault(); jump(); } });
     });
-    addClass(sec, 'is-pinned');
-    place();
-    scrollHandlers.push(update);
-    resizeHandlers.push(function () { place(); cur = -2; update(); });
-    update();
-  });
-
+    place(); draw(curX);
+    resizeHandlers.push(function () { place(); draw(curX); });
+    return { go: go };
+  }
 
   /* ---------- Chapter 5: two stories on one scale ---------- */
   all('[data-scale]').forEach(function (box) {
